@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <script>
+        // 定义状态
+        const PENDING = 'pending';
+        const FULFILLED = 'fulfilled';
+        const REJECTED = 'rejected';
+
+        //JCPromise构造函数
+        class JCPromise {
+            constructor(executor) {
+                this.status = PENDING; //初始状态
+                this.value = null; //成功后的值
+                this.error = null; //失败值
+                this.onFulfilledCallback = null; // 存储成功回调函数 (处理异步问题)
+                this.onRejectedCallback = null; // 存储失败回调函数 (处理异步问题)
+
+                // executor 是一个执行器，进入会立即执行
+                // 并传入resolve和reject方法
+                executor(this.resolve, this.reject);
+            }
+
+            //更改成功后的状态
+            resolve = (value) => {
+                // 只有状态是等待，才执行状态修改
+                if (this.status === PENDING) {
+                    // 状态修改为成功
+                    this.status = FULFILLED;
+                    // 保存成功之后的值
+                    this.value = value;
+                    // 判断成功回调是否存在，如果存在就调用 (处理异步问题)
+                    this.onFulfilledCallback && this.onFulfilledCallback(value);
+                }
+            }
+
+            //更改失败后的状态
+            reject = (error) => {
+                // 只有状态是等待，才执行状态修改
+                if (this.status === PENDING) {
+                    // 状态修改为失败
+                    this.status = REJECTED;
+                    // 保存失败之后的原因
+                    this.error = error;
+                    // 判断失败回调是否存在，如果存在就调用 (处理异步问题)
+                    this.onRejectedCallback && this.onRejectedCallback(error)
+                }
+            }
+
+            //回调
+            then(onFulfilled, onRejected) {
+                if (this.status === FULFILLED) {
+                    //成功后返回值
+                    onFulfilled(this.value);
+                } else if (this.status === REJECTED) {
+                    //失败后返回错误原因
+                    onRejected(this.error);
+                } else if (this.status === PENDING) { //处理异步问题
+                    // 因为不知道后面状态的变化情况，所以将成功回调和失败回调存储起来
+                    // 等到执行成功失败函数的时候再传递
+                    this.onFulfilledCallback = onFulfilled;
+                    this.onRejectedCallback = onRejected;
+                }
+            }
+        }
+
+    </script>
+
+    <script>
+        let promise = new JCPromise((resolve, reject) => {
+            setTimeout(() => { 
+                resolve('success')
+            }, 2000);
+        })
+
+        promise.then(value => {
+            console.log('resolve', value)
+        }, error => {
+            console.log('reject', error)
+        })
+    </script>
+</body>
+
+</html>
