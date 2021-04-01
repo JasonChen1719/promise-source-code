@@ -21,12 +21,18 @@
                 this.status = PENDING; //初始状态
                 this.value = null; //成功后的值
                 this.error = null; //失败值
-                this.onFulfilledCallback = null; // 存储成功回调函数 (处理异步问题)
-                this.onRejectedCallback = null; // 存储失败回调函数 (处理异步问题)
+                this.onFulfilledCallbacks = []; // 存储成功回调函数
+                this.onRejectedCallbacks = []; // 存储失败回调函数
 
                 // executor 是一个执行器，进入会立即执行
                 // 并传入resolve和reject方法
-                executor(this.resolve, this.reject);
+                try {
+                    executor(this.resolve, this.reject);
+                } catch (error) {
+                    // 如果有错误，就直接执行 reject
+                    this.reject(error)
+                }
+
             }
 
             //更改成功后的状态
@@ -37,8 +43,11 @@
                     this.status = FULFILLED;
                     // 保存成功之后的值
                     this.value = value;
-                    // 判断成功回调是否存在，如果存在就调用 (处理异步问题)
-                    this.onFulfilledCallback && this.onFulfilledCallback(value);
+                    // resolve里面将所有成功的回调拿出来执行
+                    while (this.onFulfilledCallbacks.length) {
+                        // Array.shift() 取出数组第一个元素，然后（）调用，shift不是纯函数，取出后，数组将失去该元素，直到数组为空
+                        this.onFulfilledCallbacks.shift()(value)
+                    }
                 }
             }
 
@@ -50,33 +59,167 @@
                     this.status = REJECTED;
                     // 保存失败之后的原因
                     this.error = error;
-                    // 判断失败回调是否存在，如果存在就调用 (处理异步问题)
-                    this.onRejectedCallback && this.onRejectedCallback(error)
+                    // resolve里面将所有失败的回调拿出来执行
+                    while (this.onRejectedCallbacks.length) {
+                        this.onRejectedCallbacks.shift()(error)
+                    }
                 }
             }
 
             //回调
             then(onFulfilled, onRejected) {
-                if (this.status === FULFILLED) {
-                    //成功后返回值
-                    onFulfilled(this.value);
-                } else if (this.status === REJECTED) {
-                    //失败后返回错误原因
-                    onRejected(this.error);
-                } else if (this.status === PENDING) { //处理异步问题
-                    // 因为不知道后面状态的变化情况，所以将成功回调和失败回调存储起来
-                    // 等到执行成功失败函数的时候再传递
-                    this.onFulfilledCallback = onFulfilled;
-                    this.onRejectedCallback = onRejected;
+                // 如果不传，就使用默认函数
+                const realOnFulfilled = typeof onFulfilled === 'function' ? onFulfilled : value => value;
+                const realOnRejected = typeof onRejected === 'function' ? onRejected : error => { throw error };
+
+                const promise = new JCPromise((resolve, reject) => {
+                    if (this.status === FULFILLED) {
+                        // 创建一个微任务等待 promise 完成初始化
+                        queueMicrotask(() => {
+                            try {
+                                //成功后返回值
+                                const x = realOnFulfilled(this.value);
+                                // 传入 resolvePromise 集中处理
+                                resolvePromise(promise, x, resolve, reject);
+                            } catch (error) {
+                                reject(error)
+                            }
+                        })
+
+                    } else if (this.status === REJECTED) {
+                        queueMicrotask(() => {
+                            try {
+                                // 调用失败回调，并且把原因返回
+                                const x = realOnRejected(this.error);
+                                // 传入 resolvePromise 集中处理
+                                resolvePromise(promise, x, resolve, reject);
+                            } catch (error) {
+                                reject(error)
+                            }
+                        })
+
+                    } else if (this.status === PENDING) {
+                        // 因为不知道后面状态的变化情况，所以将成功回调和失败回调存储起来
+                        // 等到执行成功失败函数的时候再传递
+                        this.onFulfilledCallbacks.push(() => {
+                            queueMicrotask(() => {
+                                try {
+                                    // 获取成功回调函数的执行结果
+                                    const x = realOnFulfilled(this.value);
+                                    // 传入 resolvePromise 集中处理
+                                    resolvePromise(promise, x, resolve, reject);
+                                } catch (error) {
+                                    reject(error)
+                                }
+                            })
+                        });
+                        this.onRejectedCallbacks.push(() => {
+                            queueMicrotask(() => {
+                                try {
+                                    // 调用失败回调，并且把原因返回
+                                    const x = realOnRejected(this.value);
+                                    // 传入 resolvePromise 集中处理
+                                    resolvePromise(promise, x, resolve, reject);
+                                } catch (error) {
+                                    reject(error)
+                                }
+                            })
+                        });
+
+
+                    }
+                })
+
+                return promise
+            }
+
+            // resolve 静态方法
+            static resolve(parameter) {
+                // 如果传入 JCPromise 就直接返回
+                if (parameter instanceof JCPromise) {
+                    return parameter;
                 }
+
+                // 转成常规方式
+                return new JCPromise(resolve => {
+                    resolve(parameter);
+                });
+            }
+
+            // reject 静态方法
+            static reject(error) {
+                return new JCPromise((resolve, reject) => {
+                    reject(error);
+                });
+            }
+        }
+
+        function resolvePromise(promise, x, resolve, reject) {
+            // 如果相等了，说明return的是自己，抛出类型错误并返回
+            if (promise === x) {
+                return reject(new TypeError('The promise and the return value are the same'));
+            }
+
+            if (typeof x === 'object' || typeof x === 'function') {
+                // x 为 null 直接返回，走后面的逻辑会报错
+                if (x === null) {
+                    return resolve(x);
+                }
+
+                let then;
+                try {
+                    // 把 x.then 赋值给 then 
+                    then = x.then;
+                } catch (error) {
+                    // 如果取 x.then 的值时抛出错误 error ，则以 error 为据因拒绝 promise
+                    return reject(error);
+                }
+
+                // 如果 then 是函数
+                if (typeof then === 'function') {
+                    let called = false;
+                    try {
+                        then.call(
+                            x, // this 指向 x
+                            // 如果 resolvePromise 以值 y 为参数被调用，则运行 [[Resolve]](promise, y)
+                            y => {
+                                // 如果 resolvePromise 和 rejectPromise 均被调用，
+                                // 或者被同一参数调用了多次，则优先采用首次调用并忽略剩下的调用
+                                // 实现这条需要前面加一个变量 called
+                                if (called) return;
+                                called = true;
+                                resolvePromise(promise, y, resolve, reject);
+                            },
+                            // 如果 rejectPromise 以据因 r 为参数被调用，则以据因 r 拒绝 promise
+                            r => {
+                                if (called) return;
+                                called = true;
+                                reject(r);
+                            });
+                    } catch (error) {
+                        // 如果调用 then 方法抛出了异常 error：
+                        // 如果 resolvePromise 或 rejectPromise 已经被调用，直接返回
+                        if (called) return;
+
+                        // 否则以 error 为据因拒绝 promise
+                        reject(error);
+                    }
+                } else {
+                    // 如果 then 不是函数，以 x 为参数执行 promise
+                    resolve(x);
+                }
+            } else {
+                // 如果 x 不为对象或者函数，以 x 为参数执行 promise
+                resolve(x);
             }
         }
 
     </script>
 
     <script>
-        let promise = new JCPromise((resolve, reject) => {
-            setTimeout(() => { 
+        //例1 异步例子
+        /* let promise = new JCPromise((resolve, reject) => {
+            setTimeout(() => {
                 resolve('success')
             }, 2000);
         })
@@ -85,7 +228,142 @@
             console.log('resolve', value)
         }, error => {
             console.log('reject', error)
+        }) */
+
+        //例2 多个then调用
+        /* let promise = new JCPromise((resolve, reject) => {
+            setTimeout(() => {
+                resolve('success')
+            }, 2000);
         })
+
+        promise.then(value => {
+            console.log(1)
+            console.log('resolve', value)
+        })
+
+        promise.then(value => {
+            console.log(2)
+            console.log('resolve', value)
+        })
+
+        promise.then(value => {
+            console.log(3)
+            console.log('resolve', value)
+        }) */
+
+        //例3 then链式调用
+        /*  const promise = new JCPromise((resolve, reject) => {
+             resolve('success')
+         })
+
+         function other() {
+             return new JCPromise((resolve, reject) => {
+                 resolve('other')
+             })
+         }
+
+         promise.then(value => {
+             console.log(1)
+             console.log('resolve', value)
+             return other()
+         }).then(value => {
+             console.log(2)
+             console.log('resolve', value)
+         }) */
+
+        //例4 then 方法返回的是自己的 Promise 对象，则会发生循环调用，报错
+        /* const promise = new JCPromise((resolve, reject) => {
+            resolve('success')
+        })
+
+        // 这个时候将promise定义一个p1，然后返回的时候返回p1这个promise
+        const p1 = promise.then(value => {
+            console.log(1)
+            console.log('resolve', value)
+            return p1
+        })
+
+        // 运行的时候会走reject
+        p1.then(value => {
+            console.log(2)
+            console.log('resolve', value)
+        }, error => {
+            console.log(3)
+            console.log(error.message)
+        }) */
+
+        //例5 捕获错误
+        /* const promise = new JCPromise((resolve, reject) => {
+            // resolve('success')
+            throw new Error('执行器错误')
+        })
+
+        promise.then(value => {
+            console.log(1)
+            console.log('resolve', value)
+        }, error => {
+            console.log(2)
+            console.log(error.message)
+        }) */
+
+        //例6 then执行时捕获错误
+        /* const promise = new JCPromise((resolve, reject) => {
+            resolve('success')
+            // throw new Error('执行器错误')
+        })
+
+        // 第一个then方法中的错误要在第二个then方法中捕获到
+        promise.then(value => {
+            console.log(1)
+            console.log('resolve', value)
+            throw new Error('then error')
+        }, reason => {
+            console.log(2)
+            console.log(reason.message)
+        }).then(value => {
+            console.log(3)
+            console.log(value);
+        }, reason => {
+            console.log(4)
+            console.log(reason.message)
+        }) */
+
+        //例7  原生Promise 是可以选择参数的单传或者不传，都不会影响执行
+        /* const promise = new JCPromise((resolve, reject) => {
+            resolve('success')
+        })
+
+        promise.then().then().then(value => console.log(value)) */
+
+        /* const promise = new JCPromise((resolve, reject) => {
+            reject('error')
+        })
+
+        promise.then().then().then(value => console.log(value), error => console.log(error)) */
+
+
+        //例8 测试题 由于原生设置了两次promise，导致4向后位移两次
+        JCPromise.resolve().then(() => {
+            console.log(0);
+            return JCPromise.resolve(4);
+        }).then((res) => {
+            console.log(res)
+        })
+
+        JCPromise.resolve().then(() => {
+            console.log(1);
+        }).then(() => {
+            console.log(2);
+        }).then(() => {
+            console.log(3);
+        }).then(() => {
+            console.log(5);
+        }).then(() => {
+            console.log(6);
+        })
+
+
     </script>
 </body>
 
